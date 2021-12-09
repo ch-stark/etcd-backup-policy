@@ -123,7 +123,7 @@ spec:
                       - name: volume-backup
                         persistentVolumeClaim:
                           claimName: etcd-backup-pvc
-              schedule: '* * * * *'
+              schedule: '0 1 * * *'
               startingDeadlineSeconds: 600
         - complianceType: musthave
           objectDefinition:
