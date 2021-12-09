@@ -1,0 +1,198 @@
+apiVersion: apps.open-cluster-management.io/v1
+kind: PlacementRule
+metadata:
+  name: placement-config-etcd-backup
+  namespace: policies
+spec:
+  clusterConditions:
+  - status: "True"
+    type: ManagedClusterConditionAvailable
+  clusterSelector:
+    matchExpressions:
+    - key: vendor
+      operator: In
+      values:
+      - OpenShift
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-config-etcd-backup
+  namespace: policies
+placementRef:
+  apiGroup: apps.open-cluster-management.io
+  kind: PlacementRule
+  name: placement-config-etcd-backup
+subjects:
+- apiGroup: policy.open-cluster-management.io
+  kind: Policy
+  name: config-etcd-backup
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  annotations:
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+  name: config-etcd-backup
+  namespace: policies
+spec:
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: config-etcd-backup
+      spec:
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: v1
+            kind: Namespace
+            metadata:
+              name: etcdbackup
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: v1
+            data:
+              OCP_BACKUP_DIRNAME: +etcd-backup-%FT%T%:z
+              OCP_BACKUP_EXPIRE_TYPE: days
+              OCP_BACKUP_KEEP_COUNT: "10"
+              OCP_BACKUP_KEEP_DAYS: "30"
+              OCP_BACKUP_SUBDIR: /
+              OCP_BACKUP_UMASK: "0027"
+            kind: ConfigMap
+            metadata:
+              name: backup-config
+              namespace: etcdbackup
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: batch/v1
+            kind: CronJob
+            metadata:
+              name: etcd-backup
+              namespace: etcdbackup
+            spec:
+              jobTemplate:
+                spec:
+                  backoffLimit: 0
+                  template:
+                    spec:
+                      containers:
+                      - command:
+                        - /bin/sh
+                        - /usr/local/bin/backup.sh
+                        envFrom:
+                        - configMapRef:
+                            name: backup-config
+                        image: quay.io/cstark/etcd-backup
+                        imagePullPolicy: Always
+                        name: backup-etcd
+                        resources:
+                          limits:
+                            cpu: 1000m
+                            memory: 512Mi
+                          requests:
+                            cpu: 500m
+                            memory: 128Mi
+                        securityContext:
+                          privileged: true
+                          runAsUser: 0
+                        volumeMounts:
+                        - mountPath: /host
+                          name: host
+                        - mountPath: /backup
+                          name: volume-backup
+                      dnsPolicy: ClusterFirst
+                      hostNetwork: true
+                      hostPID: true
+                      nodeSelector:
+                        node-role.kubernetes.io/master: ""
+                      restartPolicy: Never
+                      serviceAccountName: etcd-backup
+                      tolerations:
+                      - effect: NoSchedule
+                        key: node-role.kubernetes.io/master
+                      volumes:
+                      - hostPath:
+                          path: /
+                          type: Directory
+                        name: host
+                      - name: volume-backup
+                        persistentVolumeClaim:
+                          claimName: etcd-backup-pvc
+              schedule: '* * * * *'
+              startingDeadlineSeconds: 600
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: v1
+            kind: ServiceAccount
+            metadata:
+              labels:
+                app: etcd
+                component: backup
+              name: etcd-backup
+              namespace: etcdbackup
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: rbac.authorization.k8s.io/v1
+            kind: Role
+            metadata:
+              name: use-privileged-scc
+              namespace: etcdbackup
+            rules:
+            - apiGroups:
+              - security.openshift.io
+              resourceNames:
+              - privileged
+              resources:
+              - securitycontextconstraints
+              verbs:
+              - use
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: rbac.authorization.k8s.io/v1
+            kind: RoleBinding
+            metadata:
+              name: etcd-backup-sa-privileged
+              namespace: etcdbackup
+            roleRef:
+              apiGroup: rbac.authorization.k8s.io
+              kind: Role
+              name: use-privileged-scc
+            subjects:
+            - kind: ServiceAccount
+              name: etcd-backup
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: v1
+            kind: PersistentVolumeClaim
+            metadata:
+              name: etcd-backup-pvc
+              namespace: etcdbackup
+            spec:
+              accessModes:
+              - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 10Gi
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: monitoring.coreos.com/v1
+            kind: PrometheusRule
+            metadata:
+              name: etcd-backup-cronjob-monitor
+              namespace: etcdbackup
+            spec:
+              groups:
+              - name: cronjob-fail
+                rules:
+                - alert: EtcdBackupCronJobStatusFailed
+                  expr: |
+                    kube_job_status_succeeded{namespace="etcd-backup"} == 0
+                  labels:
+                    severity: critical
+        remediationAction: enforce
+        severity: low
