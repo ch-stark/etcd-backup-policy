@@ -38,7 +38,7 @@ metadata:
   name: config-etcd-backup
   namespace: policies
 spec:
-  disabled: false
+  disabled: true
   policy-templates:
   - objectDefinition:
       apiVersion: policy.open-cluster-management.io/v1
